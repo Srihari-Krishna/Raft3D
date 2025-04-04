@@ -1,11 +1,14 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"time"
+	"github.com/gorilla/mux"
+	"github.com/hashicorp/raft"
 )
 
 var node *RaftNode
@@ -13,45 +16,43 @@ var node *RaftNode
 func main() {
 	fmt.Println("Starting Raft3D Node...")
 
-	// Parse arguments
-	isBootstrap := false
-	var nodeID, dataDir, raftAddr, httpPort string
+	// Define command-line flags
+	isBootstrap := flag.Bool("bootstrap", false, "Start as bootstrap node")
+	nodeID := flag.String("node_id", "", "Unique node ID")
+	raftAddr := flag.String("raft_addr", "", "Raft network address (host:port)")
+	dataDir := flag.String("data_dir", "", "Directory for Raft data")
+	httpPort := flag.String("http_port", "", "HTTP API port")
 
-	if len(os.Args) > 1 {
-		if os.Args[1] == "--bootstrap" {
-			isBootstrap = true
-			nodeID = "leader"
-			dataDir = "./data/leader"
-			raftAddr = "127.0.0.1:9001"
-			httpPort = "8080"
-		} else if os.Args[1] == "--join" && len(os.Args) > 2 {
-			nodeID = os.Args[2]
-			if nodeID == "node2" {
-				dataDir = "./data/node2"
-				raftAddr = "127.0.0.1:9002"
-				httpPort = "8081"
-			} else if nodeID == "node3" {
-				dataDir = "./data/node3"
-				raftAddr = "127.0.0.1:9003"
-				httpPort = "8082"
-			} else {
-				log.Fatal("Unknown node ID. Use: node2, node3, etc.")
-			}
-		} else {
-			log.Fatal("Usage: go run . --bootstrap OR go run . --join <nodeID>")
+	flag.Parse()
+
+	// Validate inputs
+	if *isBootstrap {
+		if *nodeID == "" {
+			*nodeID = "leader"
+		}
+		if *raftAddr == "" {
+			*raftAddr = "127.0.0.1:9001"
+		}
+		if *dataDir == "" {
+			*dataDir = "./data/leader"
+		}
+		if *httpPort == "" {
+			*httpPort = "8081"
 		}
 	} else {
-		log.Fatal("Missing arguments")
+		if *nodeID == "" || *raftAddr == "" || *dataDir == "" || *httpPort == "" {
+			log.Fatal("Usage: go run . --bootstrap OR go run . --node_id=<ID> --raft_addr=<host:port> --data_dir=<dir> --http_port=<port>")
+		}
 	}
 
 	// Ensure data directory exists
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
+	if err := os.MkdirAll(*dataDir, 0755); err != nil {
 		log.Fatalf("Failed to create data directory: %v", err)
 	}
 
 	// Initialize Raft node
 	var err error
-	node, err = NewRaftNode(nodeID, dataDir, raftAddr, isBootstrap)
+	node, err = NewRaftNode(*nodeID, *dataDir, *raftAddr, *isBootstrap)
 	if err != nil {
 		log.Fatalf("Failed to start node: %v", err)
 	}
@@ -60,22 +61,45 @@ func main() {
 
 	// Start HTTP server
 	go func() {
-		addr := ":" + httpPort
+		addr := ":" + *httpPort
 		fmt.Println("HTTP server listening on", addr)
 		http.HandleFunc("/join", handleJoin)
+		http.HandleFunc("/raft/state", handleRaftState)
 		if err := http.ListenAndServe(addr, nil); err != nil {
 			log.Fatalf("HTTP server failed: %v", err)
 		}
 	}()
 
-	http.HandleFunc("/raft/state", handleRaftState)
-
+	go startServer(node.raft, node.fsm)
 	// Keep the node running
 	for {
 		time.Sleep(10 * time.Second)
 	}
 }
 
+// Setup and start HTTP server
+func startServer(raftNode *raft.Raft, fsm *RaftFSM) {
+	handler := NewAPIHandler(raftNode, fsm)
+
+	router := mux.NewRouter()
+
+	// Printer Routes
+	router.HandleFunc("/api/v1/printers", handler.createPrinter).Methods("POST")
+	router.HandleFunc("/api/v1/printers", handler.getPrinters).Methods("GET")
+
+	// Filament Routes
+	router.HandleFunc("/api/v1/filaments", handler.createFilament).Methods("POST")
+	router.HandleFunc("/api/v1/filaments", handler.getFilaments).Methods("GET")
+
+	// Print Job Routes
+	router.HandleFunc("/api/v1/print_jobs", handler.createPrintJob).Methods("POST")
+	router.HandleFunc("/api/v1/print_jobs", handler.getPrintJobs).Methods("GET")
+
+	router.HandleFunc("/api/v1/print_jobs/{job_id}/status", handler.updatePrintJobStatus).Methods("POST")
+
+	log.Println("API Server started on port 8080")
+	http.ListenAndServe(":8080", router)
+}
 
 // handleJoin handles incoming join requests
 func handleJoin(w http.ResponseWriter, r *http.Request) {

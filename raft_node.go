@@ -15,6 +15,7 @@ type RaftNode struct {
 	raft      *raft.Raft
 	transport *raft.NetworkTransport
 	config    *raft.Config
+	fsm  	  *RaftFSM 
 }
 
 // NewRaftNode initializes a new Raft node
@@ -22,11 +23,10 @@ func NewRaftNode(nodeID, dataDir, raftAddr string, isBootstrap bool) (*RaftNode,
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(nodeID)
 
-	config.ElectionTimeout = 2 * time.Second  // Faster elections
-	config.HeartbeatTimeout = 1 * time.Second // Detect failures quickly
-	config.MaxAppendEntries = 10              // Prevent delays
-	config.TrailingLogs = 100                 // Ensure logs aren't lost
-
+	config.ElectionTimeout = 2 * time.Second  
+	config.HeartbeatTimeout = 1 * time.Second  
+	config.MaxAppendEntries = 10              
+	config.TrailingLogs = 100                 
 
 	logStore, err := raftboltdb.NewBoltStore(fmt.Sprintf("%s/logs.bolt", dataDir))
 	if err != nil {
@@ -48,7 +48,11 @@ func NewRaftNode(nodeID, dataDir, raftAddr string, isBootstrap bool) (*RaftNode,
 		return nil, fmt.Errorf("failed to create transport: %v", err)
 	}
 
-	raftNode, err := raft.NewRaft(config, nil, logStore, stableStore, snapshotStore, transport)
+	// ✅ Add FSM here
+	fsm := NewRaftFSM()
+
+	// ✅ Pass FSM to Raft
+	raftNode, err := raft.NewRaft(config, fsm, logStore, stableStore, snapshotStore, transport)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create Raft instance: %v", err)
 	}
@@ -70,15 +74,15 @@ func NewRaftNode(nodeID, dataDir, raftAddr string, isBootstrap bool) (*RaftNode,
 	} else {
 		fmt.Printf("Follower node %s started at %s\n", nodeID, raftAddr)
 	}
-	
+
 	return &RaftNode{
 		raft:      raftNode,
 		transport: transport,
 		config:    config,
+		fsm:       fsm,
 	}, nil
-
-	
 }
+
 
 // JoinCluster adds a new node to the Raft cluster
 func (n *RaftNode) JoinCluster(nodeID, addr string) error {
