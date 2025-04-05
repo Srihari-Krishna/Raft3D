@@ -2,27 +2,29 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"io"
-	"sync"
 	"log"
+	"sync"
+
 	"github.com/hashicorp/raft"
 )
 
-// PrintJob represents a single 3D printing job
 type PrintJob struct {
-	JobID   string `json:"job_id"`
-	Status  string `json:"status"`
-	Details string `json:"details"`
+	JobID              string `json:"job_id"`
+	PrinterID          string `json:"printer_id"`
+	FilamentID         string `json:"filament_id"`
+	PrintWeightInGrams int    `json:"print_weight_in_grams"`
+	Status             string `json:"status"`
+	Details            string `json:"details"`
 }
 
-// Printer represents a 3D printer in the system
 type Printer struct {
 	ID      string `json:"id"`
 	Company string `json:"company"`
 	Model   string `json:"model"`
 }
 
-// Filament represents a roll of filament
 type Filament struct {
 	ID                     string `json:"id"`
 	Type                   string `json:"type"`
@@ -31,15 +33,13 @@ type Filament struct {
 	RemainingWeightInGrams int    `json:"remaining_weight_in_grams"`
 }
 
-// RaftFSM is the FSM for storing printer, filament, and print job states
 type RaftFSM struct {
-	mu       sync.Mutex
-	printers map[string]Printer
+	mu        sync.Mutex
+	printers  map[string]Printer
 	filaments map[string]Filament
-	jobs     map[string]PrintJob
+	jobs      map[string]PrintJob
 }
 
-// NewRaftFSM creates a new FSM
 func NewRaftFSM() *RaftFSM {
 	return &RaftFSM{
 		printers:  make(map[string]Printer),
@@ -48,136 +48,205 @@ func NewRaftFSM() *RaftFSM {
 	}
 }
 
-type PrintJobStatusUpdate struct {
-	JobID  string `json:"job_id"`
-	Status string `json:"status"`
-}
-
-// Apply applies a Raft log entry to the FSM
 func (f *RaftFSM) Apply(logEntry *raft.Log) interface{} {
-    f.mu.Lock()
-    defer f.mu.Unlock()
+	f.mu.Lock()
+	defer f.mu.Unlock()
 
-    var data map[string]interface{}
-    if err := json.Unmarshal(logEntry.Data, &data); err != nil {
-        log.Println("RaftFSM Apply: Failed to unmarshal JSON into map:", err)
-        return err
-    }
+	var data map[string]interface{}
+	if err := json.Unmarshal(logEntry.Data, &data); err != nil {
+		log.Println("Apply: Failed to unmarshal log:", err)
+		return err
+	}
 
-    // ✅ Ensure new print jobs get added instead of being ignored
-    if jobID, ok := data["job_id"].(string); ok {
-        if _, exists := f.jobs[jobID]; !exists {
-            // This is a new job, add it
-            var job PrintJob
-            if err := json.Unmarshal(logEntry.Data, &job); err != nil {
-                log.Println("RaftFSM Apply: Failed to unmarshal PrintJob:", err)
-                return err
-            }
-            f.jobs[job.JobID] = job
-            log.Println(" Added new print job:", job)
-        } else {
-            // Existing job -> Update its status
-            f.jobs[jobID] = PrintJob{
-                JobID:   jobID,
-                Status:  data["status"].(string),
-                Details: f.jobs[jobID].Details, // Preserve existing details
-            }
-            log.Println(" Updated job status:", f.jobs[jobID])
-        }
-        return nil
-    }
+	jobID, hasJobID := data["job_id"].(string)
+	statusStr, hasStatus := data["status"].(string)
 
-    if _, ok := data["company"]; ok {
-        var printer Printer
-        if err := json.Unmarshal(logEntry.Data, &printer); err != nil {
-            log.Println("RaftFSM Apply: Failed to unmarshal Printer:", err)
-            return err
-        }
-        f.printers[printer.ID] = printer
-        log.Println(" Added printer:", printer)
-    } else if _, ok := data["type"]; ok {
-        var filament Filament
-        if err := json.Unmarshal(logEntry.Data, &filament); err != nil {
-            log.Println("RaftFSM Apply: Failed to unmarshal Filament:", err)
-            return err
-        }
-        f.filaments[filament.ID] = filament
-        log.Println(" Added filament:", filament)
-    }
+	// -----------------------------------------
+	// Status update for existing PrintJob
+	// -----------------------------------------
+	if hasJobID && hasStatus && statusStr != "Queued" {
+		job, exists := f.jobs[jobID]
+		if !exists {
+			return fmt.Errorf("job %s not found", jobID)
+		}
 
-    return nil
+		if !isValidTransition(job.Status, statusStr) {
+			return fmt.Errorf("invalid transition from %s to %s", job.Status, statusStr)
+		}
+
+		if statusStr == "Done" {
+			filament := f.filaments[job.FilamentID]
+			filament.RemainingWeightInGrams -= job.PrintWeightInGrams
+			f.filaments[job.FilamentID] = filament
+		}
+
+		job.Status = statusStr
+		f.jobs[jobID] = job
+		log.Println("Updated job:", job)
+		return nil
+	}
+
+	// -----------------------------------------
+	// Create new PrintJob
+	// -----------------------------------------
+	if hasJobID && data["printer_id"] != nil && data["filament_id"] != nil && data["print_weight_in_grams"] != nil {
+		var job PrintJob
+		if err := json.Unmarshal(logEntry.Data, &job); err != nil {
+			log.Println("Apply: Invalid PrintJob:", err)
+			return err
+		}
+
+		if _, exists := f.jobs[job.JobID]; exists {
+			return fmt.Errorf("job with ID %s already exists", job.JobID)
+		}
+
+		if _, ok := f.printers[job.PrinterID]; !ok {
+			return fmt.Errorf("invalid printer ID: %s", job.PrinterID)
+		}
+
+		filament, ok := f.filaments[job.FilamentID]
+		if !ok {
+			return fmt.Errorf("invalid filament ID: %s", job.FilamentID)
+		}
+
+		queuedWeight := f.calculateQueuedFilamentUsage(job.FilamentID)
+		if job.PrintWeightInGrams > (filament.RemainingWeightInGrams - queuedWeight) {
+			return fmt.Errorf("not enough filament available")
+		}
+
+		// Override whatever came with "status" — we control it.
+		job.Status = "Queued"
+		f.jobs[job.JobID] = job
+		log.Println("New job added:", job)
+		return nil
+	}
+
+	// -----------------------------------------
+	// Create Printer
+	// -----------------------------------------
+	if _, ok := data["company"]; ok && data["model"] != nil && data["id"] != nil {
+		var printer Printer
+		if err := json.Unmarshal(logEntry.Data, &printer); err != nil {
+			log.Println("Apply: Invalid Printer:", err)
+			return err
+		}
+		f.printers[printer.ID] = printer
+		log.Println("Printer added:", printer)
+		return nil
+	}
+
+	// -----------------------------------------
+	// Create Filament
+	// -----------------------------------------
+	if _, ok := data["type"]; ok && data["id"] != nil {
+		var filament Filament
+		if err := json.Unmarshal(logEntry.Data, &filament); err != nil {
+			log.Println("Apply: Invalid Filament:", err)
+			return err
+		}
+		f.filaments[filament.ID] = filament
+		log.Println("Filament added:", filament)
+		return nil
+	}
+
+	return fmt.Errorf("unknown data type or malformed input")
 }
 
 
 
+func isValidTransition(oldStatus, newStatus string) bool {
+	transitions := map[string][]string{
+		"Queued":   {"Running", "Cancelled"},
+		"Running":  {"Done", "Cancelled"},
+		"Done":     {},
+		"Cancelled": {},
+	}
+	for _, valid := range transitions[oldStatus] {
+		if newStatus == valid {
+			return true
+		}
+	}
+	return false
+}
 
+func (f *RaftFSM) calculateQueuedFilamentUsage(filamentID string) int {
+	total := 0
+	for _, job := range f.jobs {
+		if job.FilamentID == filamentID && (job.Status == "Queued" || job.Status == "Running") {
+			total += job.PrintWeightInGrams
+		}
+	}
+	return total
+}
 
-// Snapshot takes a snapshot of the FSM state
 func (f *RaftFSM) Snapshot() (raft.FSMSnapshot, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	// Copy state to snapshot
 	snapshot := &raftFSMSnapshot{
-		Printers:  make(map[string]Printer),
-		Filaments: make(map[string]Filament),
-		Jobs:      make(map[string]PrintJob),
+		Printers:  copyPrinters(f.printers),
+		Filaments: copyFilaments(f.filaments),
+		Jobs:      copyJobs(f.jobs),
 	}
-
-	// Copy each map
-	for k, v := range f.printers {
-		snapshot.Printers[k] = v
-	}
-	for k, v := range f.filaments {
-		snapshot.Filaments[k] = v
-	}
-	for k, v := range f.jobs {
-		snapshot.Jobs[k] = v
-	}
-
 	return snapshot, nil
 }
 
-// Restore restores FSM state from a snapshot
 func (f *RaftFSM) Restore(reader io.ReadCloser) error {
+	defer reader.Close()
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	defer reader.Close()
 
 	var snapshot raftFSMSnapshot
 	if err := json.NewDecoder(reader).Decode(&snapshot); err != nil {
 		return err
 	}
-
 	f.printers = snapshot.Printers
 	f.filaments = snapshot.Filaments
 	f.jobs = snapshot.Jobs
-
 	return nil
 }
 
-// raftFSMSnapshot stores a snapshot of the FSM state
 type raftFSMSnapshot struct {
 	Printers  map[string]Printer  `json:"printers"`
 	Filaments map[string]Filament `json:"filaments"`
 	Jobs      map[string]PrintJob `json:"jobs"`
 }
 
-
-// Persist writes the snapshot to the given sink
 func (s *raftFSMSnapshot) Persist(sink raft.SnapshotSink) error {
 	data, err := json.Marshal(s)
 	if err != nil {
+		_ = sink.Cancel()
 		return err
 	}
-
 	if _, err := sink.Write(data); err != nil {
 		_ = sink.Cancel()
 		return err
 	}
-
 	return sink.Close()
 }
 
-// Release is a no-op (not needed here)
 func (s *raftFSMSnapshot) Release() {}
+
+func copyPrinters(src map[string]Printer) map[string]Printer {
+	dst := make(map[string]Printer)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyFilaments(src map[string]Filament) map[string]Filament {
+	dst := make(map[string]Filament)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}
+
+func copyJobs(src map[string]PrintJob) map[string]PrintJob {
+	dst := make(map[string]PrintJob)
+	for k, v := range src {
+		dst[k] = v
+	}
+	return dst
+}

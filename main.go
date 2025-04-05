@@ -8,7 +8,6 @@ import (
 	"os"
 	"time"
 	"github.com/gorilla/mux"
-	"github.com/hashicorp/raft"
 )
 
 var node *RaftNode
@@ -61,44 +60,36 @@ func main() {
 
 	// Start HTTP server
 	go func() {
+		router := mux.NewRouter()
+
+		// Join & Raft State
+		router.HandleFunc("/join", handleJoin).Methods("POST")
+		router.HandleFunc("/raft/state", handleRaftState).Methods("GET")
+
+		// Setup API routes
+		handler := NewAPIHandler(node.raft, node.fsm)
+
+		router.HandleFunc("/api/v1/printers", handler.createPrinter).Methods("POST")
+		router.HandleFunc("/api/v1/printers", handler.getPrinters).Methods("GET")
+
+		router.HandleFunc("/api/v1/filaments", handler.createFilament).Methods("POST")
+		router.HandleFunc("/api/v1/filaments", handler.getFilaments).Methods("GET")
+
+		router.HandleFunc("/api/v1/print_jobs", handler.createPrintJob).Methods("POST")
+		router.HandleFunc("/api/v1/print_jobs", handler.getPrintJobs).Methods("GET")
+		router.HandleFunc("/api/v1/print_jobs/{job_id}/status", handler.updatePrintJobStatus).Methods("PUT")
+
 		addr := ":" + *httpPort
-		fmt.Println("HTTP server listening on", addr)
-		http.HandleFunc("/join", handleJoin)
-		http.HandleFunc("/raft/state", handleRaftState)
-		if err := http.ListenAndServe(addr, nil); err != nil {
-			log.Fatalf("HTTP server failed: %v", err)
+		fmt.Println("Unified HTTP server listening on", addr)
+		if err := http.ListenAndServe(addr, router); err != nil {
+			log.Fatalf("Unified HTTP server failed: %v", err)
 		}
 	}()
 
-	go startServer(node.raft, node.fsm)
 	// Keep the node running
 	for {
 		time.Sleep(10 * time.Second)
 	}
-}
-
-// Setup and start HTTP server
-func startServer(raftNode *raft.Raft, fsm *RaftFSM) {
-	handler := NewAPIHandler(raftNode, fsm)
-
-	router := mux.NewRouter()
-
-	// Printer Routes
-	router.HandleFunc("/api/v1/printers", handler.createPrinter).Methods("POST")
-	router.HandleFunc("/api/v1/printers", handler.getPrinters).Methods("GET")
-
-	// Filament Routes
-	router.HandleFunc("/api/v1/filaments", handler.createFilament).Methods("POST")
-	router.HandleFunc("/api/v1/filaments", handler.getFilaments).Methods("GET")
-
-	// Print Job Routes
-	router.HandleFunc("/api/v1/print_jobs", handler.createPrintJob).Methods("POST")
-	router.HandleFunc("/api/v1/print_jobs", handler.getPrintJobs).Methods("GET")
-
-	router.HandleFunc("/api/v1/print_jobs/{job_id}/status", handler.updatePrintJobStatus).Methods("POST")
-
-	log.Println("API Server started on port 8080")
-	http.ListenAndServe(":8080", router)
 }
 
 // handleJoin handles incoming join requests

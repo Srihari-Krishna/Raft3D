@@ -1,9 +1,11 @@
 go run . --bootstrap --node_id=leader --raft_addr=127.0.0.1:9001 --data_dir=leader_data --http_port=8081
 
 go run . --node_id=node2 --raft_addr=127.0.0.1:9002 --data_dir=node2_data --http_port=8082
+
 go run . --node_id=node3 --raft_addr=127.0.0.1:9003 --data_dir=node3_data --http_port=8083
 
 curl -X POST "http://localhost:8081/join?node_id=node2&addr=127.0.0.1:9002"
+
 curl -X POST "http://localhost:8081/join?node_id=node3&addr=127.0.0.1:9003"
 
 curl "http://localhost:8081/raft/state"  # Should return "Leader"
@@ -12,3 +14,7 @@ curl "http://localhost:8083/raft/state"  # Should return "Follower"
 
 # RESTARTING LEADER:
 go run . --node_id=leader --raft_addr=127.0.0.1:9001 --data_dir=leader_data --http_port=8081
+
+
+curl -X PUT "http://localhost:8081/api/v1/print_jobs/job1/status?status=Done"
+
