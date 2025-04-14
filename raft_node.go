@@ -5,9 +5,11 @@ import (
 	"log"
 	"os"
 	"time"
-
+	"strings"
 	"github.com/hashicorp/raft"
 	"github.com/hashicorp/raft-boltdb"
+	"github.com/hashicorp/go-hclog"
+
 )
 
 // RaftNode represents a Raft node
@@ -18,7 +20,10 @@ type RaftNode struct {
 	fsm  	  *RaftFSM 
 }
 
-// NewRaftNode initializes a new Raft node
+type filteredHCLLogger struct {
+	hclog.Logger
+}
+
 func NewRaftNode(nodeID, dataDir, raftAddr string, isBootstrap bool) (*RaftNode, error) {
 	config := raft.DefaultConfig()
 	config.LocalID = raft.ServerID(nodeID)
@@ -26,7 +31,15 @@ func NewRaftNode(nodeID, dataDir, raftAddr string, isBootstrap bool) (*RaftNode,
 	config.ElectionTimeout = 2 * time.Second  
 	config.HeartbeatTimeout = 1 * time.Second  
 	config.MaxAppendEntries = 10              
-	config.TrailingLogs = 100                 
+	config.TrailingLogs = 100      
+	config.SnapshotInterval = 20 * time.Second 
+	config.SnapshotThreshold = 10       
+	baseLogger := hclog.New(&hclog.LoggerOptions{
+		Name:  "raft",
+		Level: hclog.Info, 
+	})
+	config.Logger = filteredHCLLogger{Logger: baseLogger}
+		
 
 	logStore, err := raftboltdb.NewBoltStore(fmt.Sprintf("%s/logs.bolt", dataDir))
 	if err != nil {
@@ -38,7 +51,7 @@ func NewRaftNode(nodeID, dataDir, raftAddr string, isBootstrap bool) (*RaftNode,
 		return nil, fmt.Errorf("failed to create stable store: %v", err)
 	}
 
-	snapshotStore, err := raft.NewFileSnapshotStore(dataDir, 2, os.Stdout)
+	snapshotStore, err := raft.NewFileSnapshotStore(dataDir, 1, os.Stdout)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create snapshot store: %v", err)
 	}
@@ -99,4 +112,18 @@ func (n *RaftNode) JoinCluster(nodeID, addr string) error {
 
 	log.Printf("Node %s added successfully!", nodeID)
 	return nil
+}
+
+func (f filteredHCLLogger) Error(msg string, args ...interface{}) {
+	if strings.Contains(msg, "Rollback failed: tx closed") {
+		return // suppress this one
+	}
+	f.Logger.Error(msg, args...)
+}
+
+func (f filteredHCLLogger) Warn(msg string, args ...interface{}) {
+	if strings.Contains(msg, "Rollback failed: tx closed") {
+		return
+	}
+	f.Logger.Warn(msg, args...)
 }

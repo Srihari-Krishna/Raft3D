@@ -213,6 +213,7 @@ type raftFSMSnapshot struct {
 }
 
 func (s *raftFSMSnapshot) Persist(sink raft.SnapshotSink) error {
+	log.Println(">> Persisting snapshot...")
 	data, err := json.Marshal(s)
 	if err != nil {
 		_ = sink.Cancel()
@@ -250,3 +251,5 @@ func copyJobs(src map[string]PrintJob) map[string]PrintJob {
 	}
 	return dst
 }
+
+
