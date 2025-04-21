@@ -21,7 +21,7 @@ Add printer:
 curl -X POST http://localhost:8081/api/v1/printers -H "Content-Type: application/json" -d '{"id":"printer1","company":"HP", "model": "L12"}'
 
 Add filament:
-curl -X POST http://localhost:8081/api/v1/printers -H "Content-Type: application/json" -d '{"id":"printer1","company":"HP", "model": "L12"}'
+curl -X POST http://localhost:8081/api/v1/filaments -H "Content-Type: application/json" -d '{"id":"f1","type":"PVC", "color": "Black","total_weight_in_grams":100, "remaining_weight_in_grams":100}'
 
 Make print job:
 curl -X POST http://localhost:8081/api/v1/print_jobs -H "Content-Type: application/json" -d '{"job_id":"job1","printer_id":"printer1","filament_id":"f1","print_weight_in_grams":50,"status":"Queued","details":"mountain"}'
