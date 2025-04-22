@@ -1,3 +1,7 @@
+go mod download    
+
+go mod tidy
+
 go run . --bootstrap --node_id=leader --raft_addr=127.0.0.1:9001 --data_dir=leader_data --http_port=8081
 
 go run . --node_id=node2 --raft_addr=127.0.0.1:9002 --data_dir=node2_data --http_port=8082
