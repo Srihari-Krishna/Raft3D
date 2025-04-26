@@ -15,7 +15,7 @@ Start a node:
 
 go run . --node_id=<NODE_ID> --raft_addr=127.0.0.1:900X --data_dir=<DATA_DIR> --http_port=<HTTP_PORT>
 
-    Use the --bootstrap flag to create a new cluster with the first node.
+    Note: Use the --bootstrap flag to create a new cluster with the first node.
 
 Example Commands
 
@@ -116,4 +116,4 @@ To restart a previously stopped node:
 
 go run . --node_id=node1 --raft_addr=127.0.0.1:9001 --data_dir=node1_data --http_port=8081
 
-    If the cluster is already running, the restarted node will rejoin as a follower automatically.
+    If the cluster is already running, the restarted node will rejoin as a Follower automatically.
