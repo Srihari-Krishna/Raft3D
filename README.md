@@ -1,10 +1,10 @@
 
-# Raft3D - Distributed 3D Printer Management System
+## Raft3D - Distributed 3D Printer Management System
 
 This project implements a distributed 3D printer management system using the Raft consensus algorithm.
 Nodes communicate via HTTP APIs and maintain a consistent replicated state across the cluster.
 
-## 📦 Installation
+##  Installation
 
 Install project dependencies:
 
@@ -13,7 +13,7 @@ go mod download
 go mod tidy
 ```
 
-## 🚀 Running Nodes
+##  Running Nodes
 
 Start a node:
 
@@ -72,7 +72,7 @@ A leader node will return "Leader".
 
 Follower nodes will return "Follower".
 
-## 📡 REST API Endpoints
+##  REST API Endpoints
 
 **Important:** Always send API requests to the Leader node.
 
@@ -132,7 +132,7 @@ Allowed state transitions:
 curl -X PUT "http://localhost:8081/api/v1/print_jobs/job1/status?status=Running"
 ```
 
-## 🔄 Restarting a Node
+##  Restarting a Node
 
 To restart a previously stopped node:
 
